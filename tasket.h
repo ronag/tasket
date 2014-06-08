@@ -558,113 +558,6 @@ namespace tasket
     };
 
     template<typename Input, typename Output>
-    class function_node final
-        : public receiver<Input>
-        , public sender<Output>
-    {
-    public:
-        using body_type = std::function<output_type(input_type&)>;
-
-        template<typename Body>
-        function_node(executor& executor, Body&& body)
-            : executor_(executor)
-            , body_(std::forward<Body>(body))
-            , active_(false)
-        {
-            successors_.set_owner(this);
-            predecessors_.set_owner(this);
-        }
-
-        function_node(const function_node&) = delete;
-        function_node(function_node&&) = delete;
-
-        function_node& operator=(const function_node&) = delete;
-        function_node& operator=(function_node&&) = delete;
-
-        bool try_put(input_type& i, predecessor_type* s = nullptr) override
-        {
-            boost::lock_guard<std::mutex> lock(mutex_);
-
-            if (active_)
-            {
-                predecessors_.add(s);
-
-                return false;
-            }
-
-            active_ = true;
-
-            spawn_put(std::move(i));
-
-            return true;
-        }
-
-        bool try_get(output_type& o, successor_type* r = nullptr) override
-        {
-            boost::lock_guard<std::mutex> lock(mutex_);
-
-            if (!value_)
-            {
-                successors_.add(r);
-
-                return false;
-            }
-
-            o = std::move(*value_);
-            value_.reset();
-
-            spawn();
-
-            return true;
-        }
-
-        void register_successor(successor_type& r) override
-        {
-            boost::lock_guard<std::mutex> lock(mutex_);
-
-            successors_.add(&r);
-        }
-    private:
-
-        void spawn_put(input_type& i)
-        {
-            assert(active_);
-            executor_.run([=]() mutable
-            {
-                auto o = body_(i);
-
-                boost::lock_guard<std::mutex> lock(mutex_);
-
-                if (successors_.try_put(o))
-                    spawn();
-                else
-                    value_ = std::move(o);
-            });
-        }
-
-        void spawn()
-        {
-            assert(active_);
-
-            input_type i;
-            if (predecessors_.try_get(i))
-                spawn_put(std::move(i));
-            else
-                active_ = false;
-        }
-
-
-        executor&                       executor_;
-        successor_cache<output_type>    successors_;
-        predecessor_cache<input_type>   predecessors_;
-        body_type                       body_;
-        bool                            active_;
-        boost::optional<output_type>    value_;
-        std::mutex                      mutex_;
-    };
-
-
-    template<typename Input, typename Output>
     class generator_node final
         : public receiver<Input>
         , public sender<Output>
@@ -673,7 +566,7 @@ namespace tasket
         
         using source_type    = boost::coroutines::pull_coroutine<output_type>;
         using sink_type      = boost::coroutines::push_coroutine<output_type>;
-        using body_type      = std::function<void(push_type&)>;
+        using body_type      = std::function<void(sink_type&)>;
         using generator_type = std::function<body_type(input_type&)>;
 
         template<typename Generator>
@@ -692,17 +585,21 @@ namespace tasket
 
         generator_node& operator=(const generator_node&) = delete;
         generator_node& operator=(generator_node&&) = delete;
-
+        
         bool try_put(input_type& i, predecessor_type* s = nullptr) override
         {
             boost::lock_guard<std::mutex> lock(mutex_);
 
-            predecessors_.add(s);
+            if (active_ || value_)
+            {
+                predecessors_.add(s);
 
-            if (!active_)
-                spawn();
+                return false;
+            }
+            
+            spawn_put(i);
 
-            return false;
+            return true;
         }
 
         bool try_get(output_type& o, successor_type* r = nullptr) override
@@ -718,8 +615,9 @@ namespace tasket
 
             o = std::move(*value_);
             value_.reset();
-
-            spawn();
+            
+            if (!active_)
+                spawn_get();
 
             return true;
         }
@@ -731,6 +629,23 @@ namespace tasket
             successors_.add(&r);
         }
     private:
+        
+        void spawn_get()
+        {
+            ASSERT(!active_);
+
+            input_type i;
+            if (predecessors_.try_get(i))
+                spawn_put(i);
+        }
+
+        void spawn_put(input_type& i)
+        {
+            ASSERT(!source_);
+
+            source_ = source_type(generator_(std::move(i)));
+            spawn();
+        }
 
         void spawn()
         {
@@ -741,36 +656,21 @@ namespace tasket
 
                 if (source_)
                 {
-                    o_opt = source_.get();
+                    o_opt = std::move(source_.get());
                     source_();
                 }
 
                 boost::lock_guard<std::mutex> lock(mutex_);
+                
+                active_ = false;
 
                 if (!o_opt)
-                    get_and_spawn();
+                    spawn_get();
                 else if (successors_.try_put(*o_opt))
-                    spawn();
+                    spawn();                
                 else
                     value_ = std::move(*o_opt);
             });
-        }
-
-        void get_and_spawn()
-        {
-            ASSERT(active_);
-
-            input_type i;
-            if (predecessors_.try_get(i))
-            {
-                source_ = source_type(generator_(i));
-                spawn();
-            }
-            else
-            {
-                ASSERT(!source_);
-                active_ = false;
-            }
         }
 
         executor&                       executor_;
