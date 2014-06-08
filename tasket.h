@@ -676,8 +676,7 @@ namespace tasket
         
         using source_type    = boost::coroutines::pull_coroutine<output_type>;
         using sink_type      = boost::coroutines::push_coroutine<output_type>;
-        using body_type      = std::function<void(sink_type&)>;
-        using generator_type = std::function<body_type(input_type&)>;
+        using generator_type = std::function<void(input_type&, sink_type&)>;
 
         template<typename Generator>
         generator_node(executor& executor, Generator&& generator)
@@ -742,8 +741,8 @@ namespace tasket
         
         void spawn_get()
         {
-            assert(!value_);
-            assert(!active_);
+            ASSERT(!value_);
+            ASSERT(!active_);
 
             input_type i;
             if (predecessors_.try_get(i))
@@ -752,17 +751,17 @@ namespace tasket
 
         void spawn_put(input_type& i)
         {
-            assert(!value_);
-            assert(!active_);
-            assert(!source_);
+            ASSERT(!value_);
+            ASSERT(!active_);
+            ASSERT(!source_);
 
             active_ = true;
             executor_.run([=]() mutable
             {
-                assert(!value_);
-                assert(!source_);
+                ASSERT(!value_);
+                ASSERT(!source_);
 
-                source_ = source_type(generator_(std::move(i)));
+                source_ = source_type(std::bind(std::ref(generator_), std::move(i), std::placeholders::_1));
 
                 spawn();
             });
@@ -770,12 +769,12 @@ namespace tasket
 
         void spawn()
         {
-            assert(!value_);
+            ASSERT(!value_);
 
             active_ = true;
             executor_.run([=]() mutable
             {
-                assert(!value_);
+                ASSERT(!value_);
 
                 boost::optional<output_type> o_opt;
 
