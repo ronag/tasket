@@ -18,6 +18,7 @@
 
 namespace tasket
 {
+
 #ifdef TASKET_CONCRT
 
 #include <ppl.h>
@@ -76,10 +77,8 @@ namespace tasket
         std::condition_variable_any wait_cond_; // NOTE: Safe to use with ConcRT. See http://msdn.microsoft.com/en-us/library/hh921467.aspx.
         std::atomic<int>            wait_count_;
     };
-#endif
-
-#ifdef TASKET_TBB
-{
+    
+#elif TASKET_TBB
 
 #include <tbb/flow_graph.h>
 
@@ -127,7 +126,8 @@ namespace tasket
     private:
         tbb::flow_graph g_;
     };
-}
+
+#endif
         
     template<typename T>
     struct receiver;
