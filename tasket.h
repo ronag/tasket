@@ -641,10 +641,15 @@ namespace tasket
 
         void spawn_put(input_type& i)
         {
-            ASSERT(!source_);
+            active_ = true;
+            executor_.run([=]() mutable
+            {
+                ASSERT(!source_);
 
-            source_ = source_type(generator_(std::move(i)));
-            spawn();
+                source_ = source_type(generator_(std::move(i)));
+
+                spawn();
+            });
         }
 
         void spawn()
