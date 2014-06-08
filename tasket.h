@@ -2,8 +2,6 @@
 
 #include "assert.h"
 
-#include <ppl.h>
-
 #include <boost/optional.hpp>
 #include <boost/coroutine/coroutine.hpp>
 
@@ -14,8 +12,16 @@
 #include <mutex>
 #include <queue>
 
+#if !defined(TASKET_CONCRT) && !defined(TASKET_CONCRT)
+#define TASKET_CONCRT;
+#endif
+
 namespace tasket
 {
+#ifdef TASKET_CONCRT
+
+#include <ppl.h>
+
     struct scoped_oversubscription
     {
         scoped_oversubscription()
@@ -70,6 +76,58 @@ namespace tasket
         std::condition_variable_any wait_cond_; // NOTE: Safe to use with ConcRT. See http://msdn.microsoft.com/en-us/library/hh921467.aspx.
         std::atomic<int>            wait_count_;
     };
+#endif
+
+#ifdef TASKET_TBB
+{
+
+#include <tbb/flow_graph.h>
+
+    struct scoped_oversubscription
+    {
+        scoped_oversubscription()
+        {
+            // NOT IMPLEMENTED
+        }
+
+        ~scoped_oversubscription()
+        {
+            // NOT IMPLEMENTED
+        }
+    };
+
+    class executor
+    {
+    public:
+
+        executor()
+        {
+        }
+
+        void run(std::function<void()> func)
+        {
+            g_.run(std::move(func));
+        }
+
+        void wait_for_all()
+        {
+            g_.wait_for_all();
+        }
+
+        void increment_wait_count()
+        {
+            g_.increment_wait_count();
+        }
+
+        void decrement_wait_count()
+        {
+            g_.decrement_wait_count();
+        }
+
+    private:
+        tbb::flow_graph g_;
+    };
+}
         
     template<typename T>
     struct receiver;
