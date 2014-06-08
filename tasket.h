@@ -2,21 +2,73 @@
 
 #include "assert.h"
 
-#include <tbb/flow_graph.h>
+#include <ppl.h>
 
 #include <boost/optional.hpp>
-#include <boost/thread/condition_variable.hpp>
-#include <boost/thread/mutex.hpp>
 #include <boost/thread/lock_guard.hpp>
 
+#include <condition_variable>
 #include <functional>
 #include <list>
 #include <queue>
+#include <mutex>
 
-namespace task
+namespace tasket
 {
-	using default_executor_type = tbb::flow::graph; // TODO: Change to task-group.
+	struct scoped_oversubscription
+	{
+		scoped_oversubscription()
+		{
+			concurrency::Context::Oversubscribe(true);
+		}
 
+		~scoped_oversubscription()
+		{
+			concurrency::Context::Oversubscribe(false);
+		}
+	};
+
+	class executor
+	{
+	public:
+
+		executor()
+		{
+		}
+
+		void run(std::function<void()> func)
+		{
+			task_group_.run(std::move(func));
+		}
+
+		void wait_for_all()
+		{
+			run([=]
+			{
+				std::unique_lock<std::mutex> wait_lock(wait_mutex_);
+				wait_cond_.wait(wait_lock, [this] { return wait_count_ == 0; }); // NOTE: Cooperative block.
+			});
+			task_group_.wait();
+		}
+
+		void increment_wait_count()
+		{
+			++wait_count_;
+		}
+
+		void decrement_wait_count()
+		{
+			--wait_count_;
+			wait_cond_.notify_one();
+		}
+
+	private:
+		concurrency::task_group		task_group_;
+		std::mutex					wait_mutex_; // NOTE: Safe to use with ConcRT. See http://msdn.microsoft.com/en-us/library/hh874761.aspx.
+		std::condition_variable_any wait_cond_; // NOTE: Safe to use with ConcRT. See http://msdn.microsoft.com/en-us/library/hh921467.aspx.
+		std::atomic<int>			wait_count_;
+	};
+		
 	template<typename T>
 	struct receiver;
 
@@ -151,7 +203,7 @@ namespace task
 
 		bool try_put(input_type& i, predecessor_type* s = nullptr) override
 		{
-			boost::lock_guard<boost::mutex> lock(mutex_);
+			auto&& lock = boost::make_lock_guard(mutex_);
 
 			for (auto successor : successors_)
 				successor->try_put(input_type{ i });
@@ -161,7 +213,7 @@ namespace task
 
 		bool try_get(output_type& o, successor_type* r = nullptr) override
 		{
-			boost::lock_guard<boost::mutex> lock(mutex_);
+			auto&& lock = boost::make_lock_guard(mutex_);
 
 			successors_.push_back(r);
 
@@ -170,13 +222,13 @@ namespace task
 
 		void register_successor(successor_type& r) override
 		{
-			boost::lock_guard<boost::mutex> lock(mutex_);
+			boost::lock_guard<std::mutex> lock(mutex_);
 
 			successors_.push_back(&r);
 		}
 	private:
 		std::list<successor_type*> successors_;
-		boost::mutex               mutex_;
+		std::mutex               mutex_;
 	};
 
 
@@ -199,7 +251,7 @@ namespace task
 
 		bool try_put(input_type& i, predecessor_type* s = nullptr) override
 		{
-			boost::lock_guard<boost::mutex> lock(mutex_);
+			auto&& lock = boost::make_lock_guard(mutex_);
 
 			for (auto successor : successors_)
 				successor->try_put(input_type{ i }, this);
@@ -211,7 +263,7 @@ namespace task
 
 		bool try_get(output_type& o, successor_type* r = nullptr) override
 		{
-			boost::lock_guard<boost::mutex> lock(mutex_);
+			auto&& lock = boost::make_lock_guard(mutex_);
 
 			if (!value_)
 			{
@@ -227,14 +279,14 @@ namespace task
 
 		void register_successor(successor_type& r) override
 		{
-			boost::lock_guard<boost::mutex> lock(mutex_);
+			auto&& lock = boost::make_lock_guard(mutex_);
 
 			successors_.push_back(&r);
 		}
 	private:
 		std::list<successor_type*>  successors_;
 		boost::optional<input_type> value_;
-		boost::mutex                mutex_;
+		std::mutex                mutex_;
 	};
 
 	template<typename T>
@@ -257,7 +309,7 @@ namespace task
 
 		bool try_put(input_type& i, predecessor_type* s = nullptr) override
 		{
-			boost::lock_guard<boost::mutex> lock(mutex_);
+			auto&& lock = boost::make_lock_guard(mutex_);
 
 			if (!successors_.try_put(i))
 				queue_.push(std::move(i));
@@ -269,7 +321,7 @@ namespace task
 
 		bool try_get(output_type& o, successor_type* r = nullptr) override
 		{
-			boost::lock_guard<boost::mutex> lock(mutex_);
+			auto&& lock = boost::make_lock_guard(mutex_);
 
 			if (queue_.empty())
 			{
@@ -286,17 +338,17 @@ namespace task
 
 		void register_successor(successor_type& r) override
 		{
-			boost::lock_guard<boost::mutex> lock(mutex_);
+			boost::lock_guard<std::mutex> lock(mutex_);
 
 			successors_.add(&r);
 		}
 	private:
 		successor_cache<output_type> successors_;
-		std::queue<input_type>	   queue_;
-		boost::mutex				   mutex_;
+		std::queue<input_type>	     queue_;
+		std::mutex				 mutex_;
 	};
 
-	template<typename T, typename E = default_executor_type>
+	template<typename T>
 	class source_node final
 		: public sender<T>
 	{
@@ -304,7 +356,7 @@ namespace task
 		using body_type = std::function<bool(output_type&)>;
 
 		template<typename Body>
-		source_node(E& executor, Body&& body)
+		source_node(executor& executor, Body&& body)
 			: executor_(executor)
 			, body_(std::move(body))
 		{
@@ -324,7 +376,7 @@ namespace task
 
 		bool try_get(output_type& o, successor_type* r = nullptr) override
 		{
-			boost::lock_guard<boost::mutex> lock(mutex_);
+			auto&& lock = boost::make_lock_guard(mutex_);
 
 			if (!value_)
 			{
@@ -343,7 +395,7 @@ namespace task
 
 		void register_successor(successor_type& r) override
 		{
-			boost::lock_guard<boost::mutex> lock(mutex_);
+			auto&& lock = boost::make_lock_guard(mutex_);
 
 			successors_.add(&r);
 		}
@@ -357,7 +409,7 @@ namespace task
 				if (!body_(o))
 					return;
 
-				boost::lock_guard<boost::mutex> lock(mutex_);
+				boost::lock_guard<std::mutex> lock(mutex_);
 
 				if (!successors_.try_put(o))
 					value_ = std::move(o);
@@ -366,11 +418,11 @@ namespace task
 			});
 		}
 
-		E&							 executor_;
+		executor&					 executor_;
 		successor_cache<output_type> successors_;
 		body_type					 body_;
 		boost::optional<output_type> value_;
-		boost::mutex				 mutex_;
+		std::mutex				 mutex_;
 	};
 
 	template<typename T>
@@ -397,7 +449,7 @@ namespace task
 
 		bool try_put(input_type& i, predecessor_type* s = nullptr) override
 		{
-			boost::lock_guard<boost::mutex> lock(mutex_);
+			auto&& lock = boost::make_lock_guard(mutex_);
 
 			if (!predicate_(i))
 				return true;
@@ -412,7 +464,7 @@ namespace task
 
 		bool try_get(output_type& o, successor_type* r = nullptr) override
 		{
-			boost::lock_guard<boost::mutex> lock(mutex_);
+			auto&& lock = boost::make_lock_guard(mutex_);
 
 			output_type o2;
 			while (predecessors_.try_get(o2))
@@ -431,7 +483,7 @@ namespace task
 
 		void register_successor(successor_type& r) override
 		{
-			boost::lock_guard<boost::mutex> lock(mutex_);
+			auto&& lock = boost::make_lock_guard(mutex_);
 
 			successors_.add(&r);
 		}
@@ -440,10 +492,10 @@ namespace task
 		successor_cache<output_type>	successors_;
 		predecessor_cache<input_type>	predecessors_;
 		predicate_type					predicate_;
-		boost::mutex					mutex_;
+		std::mutex					mutex_;
 	};
 
-	template<typename Input, typename Output, typename E = default_executor_type>
+	template<typename Input, typename Output>
 	class function_node final
 		: public receiver<Input>
 		, public sender<Output>
@@ -452,7 +504,7 @@ namespace task
 		using body_type = std::function<output_type(input_type&)>;
 
 		template<typename Body>
-		function_node(E& executor, Body&& body)
+		function_node(executor& executor, Body&& body)
 			: executor_(executor)
 			, body_(std::forward<Body>(body))
 			, active_(false)
@@ -469,7 +521,7 @@ namespace task
 
 		bool try_put(input_type& i, predecessor_type* s = nullptr) override
 		{
-			boost::lock_guard<boost::mutex> lock(mutex_);
+			boost::lock_guard<std::mutex> lock(mutex_);
 
 			if (active_)
 			{
@@ -487,7 +539,7 @@ namespace task
 
 		bool try_get(output_type& o, successor_type* r = nullptr) override
 		{
-			boost::lock_guard<boost::mutex> lock(mutex_);
+			boost::lock_guard<std::mutex> lock(mutex_);
 
 			if (!value_)
 			{
@@ -506,7 +558,7 @@ namespace task
 
 		void register_successor(successor_type& r) override
 		{
-			boost::lock_guard<boost::mutex> lock(mutex_);
+			boost::lock_guard<std::mutex> lock(mutex_);
 
 			successors_.add(&r);
 		}
@@ -519,7 +571,7 @@ namespace task
 			{
 				auto o = body_(i);
 
-				boost::lock_guard<boost::mutex> lock(mutex_);
+				boost::lock_guard<std::mutex> lock(mutex_);
 
 				if (successors_.try_put(o))
 					spawn();
@@ -540,17 +592,17 @@ namespace task
 		}
 
 
-		E&								executor_;
+		executor&						executor_;
 		successor_cache<output_type>	successors_;
 		predecessor_cache<input_type>	predecessors_;
 		body_type						body_;
 		bool							active_;
 		boost::optional<output_type>	value_;
-		boost::mutex					mutex_;
+		std::mutex					mutex_;
 	};
 
 
-	template<typename Input, typename Output, typename E = default_executor_type>
+	template<typename Input, typename Output>
 	class generator_node final
 		: public receiver<Input>
 		, public sender<Output>
@@ -561,7 +613,7 @@ namespace task
 		using generator_type = std::function<body_type(input_type&)>;
 
 		template<typename Generator>
-		generator_node(E& executor, Generator&& generator)
+		generator_node(executor& executor, Generator&& generator)
 			: executor_(executor)
 			, generator_(std::forward<Generator>(generator))
 			, body_(nullptr)
@@ -579,7 +631,7 @@ namespace task
 
 		bool try_put(input_type& i, predecessor_type* s = nullptr) override
 		{
-			boost::lock_guard<boost::mutex> lock(mutex_);
+			boost::lock_guard<std::mutex> lock(mutex_);
 
 			predecessors_.add(s);
 
@@ -591,7 +643,7 @@ namespace task
 
 		bool try_get(output_type& o, successor_type* r = nullptr) override
 		{
-			boost::lock_guard<boost::mutex> lock(mutex_);
+			boost::lock_guard<std::mutex> lock(mutex_);
 
 			if (!value_)
 			{
@@ -610,7 +662,7 @@ namespace task
 
 		void register_successor(successor_type& r) override
 		{
-			boost::lock_guard<boost::mutex> lock(mutex_);
+			boost::lock_guard<std::mutex> lock(mutex_);
 
 			successors_.add(&r);
 		}
@@ -624,7 +676,7 @@ namespace task
 				output_type o;
 				auto result = body_ && body_(o);
 
-				boost::lock_guard<boost::mutex> lock(mutex_);
+				boost::lock_guard<std::mutex> lock(mutex_);
 
 				if (!result)
 					get_and_spawn();
@@ -652,13 +704,13 @@ namespace task
 			}
 		}
 
-		E&								executor_;
+		executor&						executor_;
 		successor_cache<output_type>	successors_;
 		predecessor_cache<input_type>	predecessors_;
 		bool							active_;
 		body_type						body_;
 		generator_type					generator_;
 		boost::optional<output_type>	value_;
-		boost::mutex					mutex_;
+		std::mutex					mutex_;
 	};
 }
