@@ -6,11 +6,12 @@
 
 #include <boost/optional.hpp>
 
+#include <assert.h>
 #include <condition_variable>
 #include <functional>
 #include <list>
-#include <queue>
 #include <mutex>
+#include <queue>
 
 namespace tasket
 {
@@ -132,7 +133,7 @@ namespace tasket
         {
             for (auto it = successors_.begin(); it != successors_.end(); it = successors_.erase(it))
             {
-                ASSERT(*it);
+                assert(*it);
 
                 if ((*it)->try_put(i, owner_))
                     return true;
@@ -173,7 +174,7 @@ namespace tasket
         {
             for (auto it = predecessors_.begin(); it != predecessors_.end(); it = predecessors_.erase(it))
             {
-                ASSERT(*it);
+                assert(*it);
 
                 if ((*it)->try_get(o, owner_))
                     return true;
@@ -316,7 +317,7 @@ namespace tasket
             if (!successors_.try_put(i))
                 queue_.push(std::move(i));
             else
-                ASSERT(queue_.empty());
+                assert(queue_.empty());
 
             return true;
         }
@@ -568,7 +569,7 @@ namespace tasket
 
         void spawn_put(input_type& i)
         {
-            ASSERT(active_);
+            assert(active_);
             executor_.run([=]() mutable
             {
                 auto o = body_(i);
@@ -584,7 +585,7 @@ namespace tasket
 
         void spawn()
         {
-            ASSERT(active_);
+            assert(active_);
 
             input_type i;
             if (predecessors_.try_get(i))
@@ -691,7 +692,7 @@ namespace tasket
 
         void get_and_spawn()
         {
-            ASSERT(active_);
+            assert(active_);
 
             input_type i;
             if (predecessors_.try_get(i))
