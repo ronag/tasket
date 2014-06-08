@@ -5,6 +5,7 @@
 #include <ppl.h>
 
 #include <boost/optional.hpp>
+#include <boost/coroutine/coroutine.hpp>
 
 #include <assert.h>
 #include <condition_variable>
@@ -611,15 +612,17 @@ namespace tasket
         , public sender<Output>
     {
     public:
-
-        using body_type = std::function<bool(output_type&)>;
+        
+        using source_type    = boost::coroutines::pull_coroutine<output_type>;
+        using sink_type      = boost::coroutines::push_coroutine<output_type>;
+        using body_type      = std::function<void(push_type&)>;
         using generator_type = std::function<body_type(input_type&)>;
 
         template<typename Generator>
         generator_node(executor& executor, Generator&& generator)
             : executor_(executor)
             , generator_(std::forward<Generator>(generator))
-            , body_(nullptr)
+            , source_([](sink_type& sink){})
             , active_(false)
         {
             successors_.set_owner(this);
@@ -676,33 +679,38 @@ namespace tasket
             active_ = true;
             executor_.run([=]() mutable
             {
-                output_type o;
-                auto result = body_ && body_(o);
+                boost::optional<output_type> o_opt;
+
+                if (source_)
+                {
+                    o_opt = source_.get();
+                    source_();
+                }
 
                 boost::lock_guard<std::mutex> lock(mutex_);
 
-                if (!result)
+                if (!o_opt)
                     get_and_spawn();
-                else if (successors_.try_put(o))
+                else if (successors_.try_put(*o_opt))
                     spawn();
                 else
-                    value_ = std::move(o);
+                    value_ = std::move(*o_opt);
             });
         }
 
         void get_and_spawn()
         {
-            assert(active_);
+            ASSERT(active_);
 
             input_type i;
             if (predecessors_.try_get(i))
             {
-                body_ = generator_(i);
+                source_ = source_type(generator_(i));
                 spawn();
             }
             else
             {
-                body_ = nullptr;
+                ASSERT(!source_);
                 active_ = false;
             }
         }
@@ -711,7 +719,7 @@ namespace tasket
         successor_cache<output_type>    successors_;
         predecessor_cache<input_type>   predecessors_;
         bool                            active_;
-        body_type                       body_;
+        source_type                     source_;
         generator_type                  generator_;
         boost::optional<output_type>    value_;
         std::mutex                      mutex_;
