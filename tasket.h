@@ -425,7 +425,7 @@ namespace tasket
         successor_cache<output_type> successors_;
         body_type                    body_;
         boost::optional<output_type> value_;
-        std::mutex                  mutex_;
+        std::mutex                   mutex_;
     };
 
     template<typename T>
