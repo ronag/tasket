@@ -5,7 +5,6 @@
 #include <ppl.h>
 
 #include <boost/optional.hpp>
-#include <boost/thread/lock_guard.hpp>
 
 #include <condition_variable>
 #include <functional>
@@ -45,8 +44,9 @@ namespace tasket
         {
             run([=]
             {
+                // NOTE: Cooperative block.
                 std::unique_lock<std::mutex> wait_lock(wait_mutex_);
-                wait_cond_.wait(wait_lock, [this] { return wait_count_ == 0; }); // NOTE: Cooperative block.
+                wait_cond_.wait(wait_lock, [this] { return wait_count_ == 0; }); 
             });
             task_group_.wait();
         }
@@ -113,6 +113,7 @@ namespace tasket
         using predecessor_type = sender<input_type>;
 
         successor_cache()
+            : owner_(nullptr)
         {
         }
 
@@ -141,7 +142,7 @@ namespace tasket
         }
     private:
         std::list<successor_type*> successors_;
-        predecessor_type*          owner_ = nullptr;
+        predecessor_type*          owner_;
     };
 
     template<typename T>
@@ -153,6 +154,7 @@ namespace tasket
         using predecessor_type = sender<output_type>;
 
         predecessor_cache()
+            : owner_(nullptr)
         {
         }
 
@@ -181,7 +183,7 @@ namespace tasket
         }
     private:
         std::list<predecessor_type*> predecessors_;
-        successor_type*              owner_ = nullptr;
+        successor_type*              owner_;
     };
 
     template<typename T>
@@ -203,7 +205,7 @@ namespace tasket
 
         bool try_put(input_type& i, predecessor_type* s = nullptr) override
         {
-            auto&& lock = boost::make_lock_guard(mutex_);
+            std::lock_guard<std::mutex> lock(mutex_);
 
             for (auto successor : successors_)
                 successor->try_put(input_type{ i });
@@ -213,7 +215,7 @@ namespace tasket
 
         bool try_get(output_type& o, successor_type* r = nullptr) override
         {
-            auto&& lock = boost::make_lock_guard(mutex_);
+            std::lock_guard<std::mutex> lock(mutex_);
 
             successors_.push_back(r);
 
@@ -228,7 +230,7 @@ namespace tasket
         }
     private:
         std::list<successor_type*> successors_;
-        std::mutex               mutex_;
+        std::mutex                 mutex_;
     };
 
 
@@ -251,7 +253,7 @@ namespace tasket
 
         bool try_put(input_type& i, predecessor_type* s = nullptr) override
         {
-            auto&& lock = boost::make_lock_guard(mutex_);
+            std::lock_guard<std::mutex> lock(mutex_);
 
             for (auto successor : successors_)
                 successor->try_put(input_type{ i }, this);
@@ -263,7 +265,7 @@ namespace tasket
 
         bool try_get(output_type& o, successor_type* r = nullptr) override
         {
-            auto&& lock = boost::make_lock_guard(mutex_);
+            std::lock_guard<std::mutex> lock(mutex_);
 
             if (!value_)
             {
@@ -279,14 +281,14 @@ namespace tasket
 
         void register_successor(successor_type& r) override
         {
-            auto&& lock = boost::make_lock_guard(mutex_);
+            std::lock_guard<std::mutex> lock(mutex_);
 
             successors_.push_back(&r);
         }
     private:
         std::list<successor_type*>  successors_;
         boost::optional<input_type> value_;
-        std::mutex                mutex_;
+        std::mutex                  mutex_;
     };
 
     template<typename T>
@@ -309,7 +311,7 @@ namespace tasket
 
         bool try_put(input_type& i, predecessor_type* s = nullptr) override
         {
-            auto&& lock = boost::make_lock_guard(mutex_);
+            std::lock_guard<std::mutex> lock(mutex_);
 
             if (!successors_.try_put(i))
                 queue_.push(std::move(i));
@@ -321,7 +323,7 @@ namespace tasket
 
         bool try_get(output_type& o, successor_type* r = nullptr) override
         {
-            auto&& lock = boost::make_lock_guard(mutex_);
+            std::lock_guard<std::mutex> lock(mutex_);
 
             if (queue_.empty())
             {
@@ -345,7 +347,7 @@ namespace tasket
     private:
         successor_cache<output_type> successors_;
         std::queue<input_type>       queue_;
-        std::mutex               mutex_;
+        std::mutex                   mutex_;
     };
 
     template<typename T>
@@ -376,7 +378,7 @@ namespace tasket
 
         bool try_get(output_type& o, successor_type* r = nullptr) override
         {
-            auto&& lock = boost::make_lock_guard(mutex_);
+            std::lock_guard<std::mutex> lock(mutex_);
 
             if (!value_)
             {
@@ -395,7 +397,7 @@ namespace tasket
 
         void register_successor(successor_type& r) override
         {
-            auto&& lock = boost::make_lock_guard(mutex_);
+            std::lock_guard<std::mutex> lock(mutex_);
 
             successors_.add(&r);
         }
@@ -422,7 +424,7 @@ namespace tasket
         successor_cache<output_type> successors_;
         body_type                    body_;
         boost::optional<output_type> value_;
-        std::mutex               mutex_;
+        std::mutex                  mutex_;
     };
 
     template<typename T>
@@ -449,7 +451,7 @@ namespace tasket
 
         bool try_put(input_type& i, predecessor_type* s = nullptr) override
         {
-            auto&& lock = boost::make_lock_guard(mutex_);
+            std::lock_guard<std::mutex> lock(mutex_);
 
             if (!predicate_(i))
                 return true;
@@ -464,7 +466,7 @@ namespace tasket
 
         bool try_get(output_type& o, successor_type* r = nullptr) override
         {
-            auto&& lock = boost::make_lock_guard(mutex_);
+            std::lock_guard<std::mutex> lock(mutex_);
 
             output_type o2;
             while (predecessors_.try_get(o2))
@@ -483,7 +485,7 @@ namespace tasket
 
         void register_successor(successor_type& r) override
         {
-            auto&& lock = boost::make_lock_guard(mutex_);
+            std::lock_guard<std::mutex> lock(mutex_);
 
             successors_.add(&r);
         }
@@ -492,7 +494,7 @@ namespace tasket
         successor_cache<output_type>    successors_;
         predecessor_cache<input_type>   predecessors_;
         predicate_type                  predicate_;
-        std::mutex                  mutex_;
+        std::mutex                      mutex_;
     };
 
     template<typename Input, typename Output>
@@ -598,7 +600,7 @@ namespace tasket
         body_type                       body_;
         bool                            active_;
         boost::optional<output_type>    value_;
-        std::mutex                  mutex_;
+        std::mutex                      mutex_;
     };
 
 
@@ -711,6 +713,6 @@ namespace tasket
         body_type                       body_;
         generator_type                  generator_;
         boost::optional<output_type>    value_;
-        std::mutex                  mutex_;
+        std::mutex                      mutex_;
     };
 }
