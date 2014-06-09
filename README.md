@@ -28,10 +28,7 @@ Example:
 		for (auto str : source)
 		{
 			if (!str)
-			{
-				sink(nullptr);
-				break;
-			}
+				continue;
 
 			for (auto c : *str)
 			{
@@ -39,6 +36,7 @@ Example:
 				sink(' ');
 			}
 		}
+		sink(nullptr);
 	});
 
 	generator_node<std::string, void*> out(executor, [&](tasket::pull_type<std::optional<std::string>>>& source, tasket::push_type<void*>& sink)
@@ -48,10 +46,7 @@ Example:
 		for (auto c : source)
 		{
 			if (!c)
-			{
-				sink(nullptr);
-				break;
-			}
+				continue;
 
 			tasket::scoped_oversubscription oversubscribe;
 			outfile << *c;
