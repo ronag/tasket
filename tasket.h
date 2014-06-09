@@ -581,24 +581,55 @@ namespace tasket
         std::mutex                      mutex_;
     };
         
-    template<typename Input, typename Output>
+    template<typename Input, typename Output, typename Generator = std::function<void(pull_type<Input>&, push_type<Output>&)>>
     class generator_node final
         : public receiver<Input>
         , public sender<Output>
     {
     public:
-        
-        using source_type    = boost::coroutines::pull_coroutine<output_type>;
-        using sink_type      = boost::coroutines::push_coroutine<output_type>;
-        using generator_type = std::function<void(input_type&, sink_type&)>;
+
+        using source_type = pull_type<input_type>;
+        using sink_type = push_type<output_type>;
+        using generator_type = Generator;
 
         template<typename Generator>
         generator_node(executor& executor, Generator&& generator)
             : executor_(executor)
             , successors_(this)
             , predecessors_(this)
-            , generator_(std::forward<Generator>(generator))
-            , source_([](sink_type& sink){})
+            , output_([&](pull_type<output_type>& source)
+        {
+            for (auto o : source)
+            {
+                std::unique_lock<std::mutex> lock(mutex_);
+
+                if (!successors_.try_put(o))
+                    value_ = std::move(o);
+
+                while (value_)
+                    cond_.wait(lock); // Cooperative block.
+            }
+        })
+            , generator_(std::bind(std::forward<Generator>(generator), std::placeholders::_1, std::ref(output_)))
+            , input_([&](pull_type<input_type>& source)
+        {
+            for (auto i : source)
+            {
+                while (true)
+                {
+                    generator_(i);
+
+                    std::unique_lock<std::mutex> lock(mutex_);
+
+                    active_ = false;
+
+                    if (!predecessors_.try_get(i))
+                        break;
+
+                    active_ = true;
+                }
+            }
+        })
             , active_(false)
         {
         }
@@ -608,7 +639,7 @@ namespace tasket
 
         generator_node& operator=(const generator_node&) = delete;
         generator_node& operator=(generator_node&&) = delete;
-        
+
         bool try_put(input_type& i, predecessor_type* s) override
         {
             std::lock_guard<std::mutex> lock(mutex_);
@@ -619,8 +650,12 @@ namespace tasket
 
                 return false;
             }
-            
-            spawn_put(i);
+
+            active_ = true;
+            executor_.run([=]
+            {
+                input_(i);
+            });
 
             return true;
         }
@@ -632,19 +667,14 @@ namespace tasket
             if (!value_)
             {
                 successors_.add(r);
-                
-                if (!active_)
-                    spawn();
 
                 return false;
             }
 
             o = std::move(*value_);
             value_.reset();
-            
-            if (!active_)
-                spawn();
-            
+            cond_.notify_one();
+
             return true;
         }
 
@@ -655,72 +685,18 @@ namespace tasket
             successors_.add(&r);
         }
     private:
-        
-        void spawn_get()
-        {
-            ASSERT(!value_);
-            ASSERT(!active_);
-
-            input_type i;
-            if (predecessors_.try_get(i))
-                spawn_put(i);
-        }
-
-        void spawn_put(input_type& i)
-        {
-            ASSERT(!value_);
-            ASSERT(!active_);
-            ASSERT(!source_);
-
-            active_ = true;
-            executor_.run([=]() mutable
-            {
-                ASSERT(!value_);
-                ASSERT(!source_);
-
-                source_ = source_type(std::bind(std::ref(generator_), std::move(i), std::placeholders::_1));
-
-                spawn();
-            });
-        }
-
-        void spawn()
-        {
-            ASSERT(!value_);
-
-            active_ = true;
-            executor_.run([=]() mutable
-            {
-                ASSERT(!value_);
-
-                boost::optional<output_type> o_opt;
-
-                if (source_)
-                {
-                    o_opt = std::move(source_.get());
-                    source_();
-                }
-
-                std::lock_guard<std::mutex> lock(mutex_);
-                
-                active_ = false;
-
-                if (!o_opt)
-                    spawn_get();
-                else if (successors_.try_put(*o_opt))
-                    spawn();                
-                else
-                    value_ = std::move(*o_opt);             
-            });
-        }
 
         executor&                       executor_;
         successor_cache<output_type>    successors_;
         predecessor_cache<input_type>   predecessors_;
+
         bool                            active_;
-        source_type                     source_;
-        generator_type                  generator_;
+        push_type<output_type>          output_;
+        push_type<input_type>           generator_;
+        push_type<input_type>           input_;
+
         boost::optional<output_type>    value_;
+        std::condition_variable         cond_;
         std::mutex                      mutex_;
     };
             
