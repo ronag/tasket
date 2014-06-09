@@ -2,26 +2,24 @@
 
 #include "assert.h"
 
-#include <boost/optional.hpp>
-#include <boost/coroutine/coroutine.hpp>
+#include <ppl.h>
 
-#include <assert.h>
+#include <boost/coroutine/coroutine.hpp>
+#include <boost/optional.hpp>
+
 #include <condition_variable>
 #include <functional>
 #include <list>
 #include <mutex>
+#include <unordered_map>
 #include <queue>
-
-#if !defined(TASKET_CONCRT) && !defined(TASKET_CONCRT)
-#define TASKET_CONCRT;
-#endif
 
 namespace tasket
 {
-
-#ifdef TASKET_CONCRT
-
-#include <ppl.h>
+    template<typename T>
+    using pull_type = boost::coroutines::pull_coroutine<T>;
+    template<typename T>
+    using push_type = boost::coroutines::push_coroutine<T>;
 
     struct scoped_oversubscription
     {
@@ -52,10 +50,9 @@ namespace tasket
         void wait_for_all()
         {
             run([=]
-            {
-                // NOTE: Cooperative block.
+            {              
                 std::unique_lock<std::mutex> wait_lock(wait_mutex_);
-                wait_cond_.wait(wait_lock, [this] { return wait_count_ == 0; }); 
+                wait_cond_.wait(wait_lock, [this] { return wait_count_ == 0; }); // NOTE: Cooperative block.
             });
             task_group_.wait();
         }
@@ -77,58 +74,6 @@ namespace tasket
         std::condition_variable_any wait_cond_; // NOTE: Safe to use with ConcRT. See http://msdn.microsoft.com/en-us/library/hh921467.aspx.
         std::atomic<int>            wait_count_;
     };
-    
-#elif TASKET_TBB
-
-#include <tbb/flow_graph.h>
-
-    struct scoped_oversubscription
-    {
-        scoped_oversubscription()
-        {
-            // NOT IMPLEMENTED
-        }
-
-        ~scoped_oversubscription()
-        {
-            // NOT IMPLEMENTED
-        }
-    };
-
-    class executor
-    {
-    public:
-
-        executor()
-        {
-        }
-
-        void run(std::function<void()> func)
-        {
-            g_.run(std::move(func));
-        }
-
-        void wait_for_all()
-        {
-            g_.wait_for_all();
-        }
-
-        void increment_wait_count()
-        {
-            g_.increment_wait_count();
-        }
-
-        void decrement_wait_count()
-        {
-            g_.decrement_wait_count();
-        }
-
-    private:
-        tbb::flow_graph g_;
-    };
-
-#endif
-        
 
     template<typename T>
     struct receiver;
@@ -178,13 +123,13 @@ namespace tasket
             : owner_(owner)
         {
         }
-        
+
         void add(successor_type* r)
-        {   
+        {
             if (r)
                 successors_.push_back(r);
         }
-        
+
         bool try_put(input_type& i)
         {
             for (auto it = successors_.begin(); it != successors_.end(); it = successors_.erase(it))
@@ -214,13 +159,13 @@ namespace tasket
             : owner_(owner)
         {
         }
-        
+
         void add(predecessor_type* s)
         {
             if (s)
                 predecessors_.push_back(s);
         }
-        
+
         bool try_get(output_type& o)
         {
             for (auto it = predecessors_.begin(); it != predecessors_.end(); it = predecessors_.erase(it))
@@ -389,7 +334,7 @@ namespace tasket
 
             return true;
         }
-        
+
         void register_successor(successor_type& r) override
         {
             std::lock_guard<std::mutex> lock(mutex_);
@@ -457,7 +402,7 @@ namespace tasket
 
             return false;
         }
-        
+
         void register_successor(successor_type& r) override
         {
             std::lock_guard<std::mutex> lock(mutex_);
@@ -505,7 +450,7 @@ namespace tasket
 
                 return false;
             }
-            
+
             spawn_put(std::move(i));
 
             return true;
@@ -524,7 +469,7 @@ namespace tasket
 
             o = std::move(*value_);
             value_.reset();
-            
+
             if (!active_)
                 spawn_get();
 
@@ -562,16 +507,16 @@ namespace tasket
                 auto o = body_(i);
 
                 std::lock_guard<std::mutex> lock(mutex_);
-                
+
                 active_ = false;
 
                 if (successors_.try_put(o))
-                    spawn_get();                
+                    spawn_get();
                 else
                     value_ = std::move(o);
             });
         }
-                
+
         executor&                       executor_;
         successor_cache<output_type>    successors_;
         predecessor_cache<input_type>   predecessors_;
@@ -580,7 +525,7 @@ namespace tasket
         boost::optional<output_type>    value_;
         std::mutex                      mutex_;
     };
-        
+
     template<typename Input, typename Output, typename Generator = std::function<void(pull_type<Input>&, push_type<Output>&)>>
     class generator_node final
         : public receiver<Input>
@@ -607,7 +552,7 @@ namespace tasket
                     value_ = std::move(o);
 
                 while (value_)
-                    cond_.wait(lock); // Cooperative block.
+                    cond_.wait(lock); // NOTE: Cooperative block.
             }
         })
             , generator_(std::bind(std::forward<Generator>(generator), std::placeholders::_1, std::ref(output_)))
@@ -699,7 +644,7 @@ namespace tasket
         std::condition_variable         cond_;
         std::mutex                      mutex_;
     };
-            
+
     template<typename T>
     class source_node final
         : public sender<T>
@@ -709,12 +654,12 @@ namespace tasket
         using sink_type = typename generator_node_type::sink_type;
         using body_type = std::function<void(sink_type&)>;
 
-        template<typename Body>
-        source_node(executor& executor, Body&& body)
-            : generator_node_(executor, [=](void*& i, generator_node_type::sink_type& sink)
-            {
-                body(sink);
-            })
+        template<typename Generator>
+        source_node(executor& executor, Generator&& generator)
+            : generator_node_(executor, [=](generator_node_type::source_type& source, generator_node_type::sink_type& sink)
+        {
+            generator(sink);
+        })
         {
         }
 
@@ -729,7 +674,7 @@ namespace tasket
             void* dummy = nullptr;
             generator_node_.try_put(dummy, nullptr);
         }
-        
+
         bool try_get(output_type& o, successor_type* r)
         {
             return generator_node_.try_get(o, r);
