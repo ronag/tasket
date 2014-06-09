@@ -15,7 +15,6 @@ Example:
 			std::string str;
 			{					
 				tasket::scoped_oversubscription oversubscribe;
-
 				if (!std::getline(infile, str))
 					break;
 			}
