@@ -454,7 +454,7 @@ namespace tasket
                 {
                     generator_(i);
 
-                    std::unique_lock<std::mutex> lock(mutex_);
+                    std::lock_guard<std::mutex> lock(mutex_);
 
                     active_ = false;
 
