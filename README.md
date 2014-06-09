@@ -27,7 +27,7 @@ Example:
 	{
 		for (auto str : source)
 		{
-			if (!source)
+			if (!str)
 			{
 				sink(nullptr);
 				break;
@@ -47,7 +47,7 @@ Example:
 
 		for (auto c : source)
 		{
-			if (!source)
+			if (!c)
 			{
 				sink(nullptr);
 				break;
