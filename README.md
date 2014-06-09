@@ -43,6 +43,8 @@ Example:
 			tasket::scoped_oversubscription oversubscribe;
 			outfile << c;
 		}
+
+		sink(nullptr); // End
 	});
 
 	make_edge(in, transform);
