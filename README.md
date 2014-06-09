@@ -6,7 +6,7 @@ Example:
 	
 	tasket::executor executor;
 
-	generator_node<void*, std::string> in(executor, [&](tasket::pull_type<void*>& source, tasket::push_type<std::string>& sink)
+	generator_node<void*, std::string> in(executor, [&](tasket::pull_type<void*>& source, tasket::push_type<std::optional<std::string>>& sink)
 	{
 		std::ifstream infile("infile.txt");
 
@@ -20,13 +20,20 @@ Example:
 			}
 			sink(str);
 		}
+		sink(nullptr);
 	});
 
-	generator_node<std::string, char> transform(executor, [&](tasket::pull_type<std::string>& source, tasket::push_type<char>& sink)
+	generator_node<std::optional<std::string>>, char> transform(executor, [&](tasket::pull_type<std::optional<std::string>>>& source, tasket::push_type<char>& sink)
 	{
 		for (auto str : source)
 		{
-			for (auto c : str)
+			if (!source)
+			{
+				sink(nullptr);
+				break;
+			}
+
+			for (auto c : *str)
 			{
 				sink(c);
 				sink(' ');
@@ -34,17 +41,21 @@ Example:
 		}
 	});
 
-	generator_node<std::string, void*> out(executor, [&](tasket::pull_type<std::string>& source, tasket::push_type<void*>& sink)
+	generator_node<std::string, void*> out(executor, [&](tasket::pull_type<std::optional<std::string>>>& source, tasket::push_type<void*>& sink)
 	{
 		std::ofstream outfile("outfile.txt");
 
 		for (auto c : source)
 		{
-			tasket::scoped_oversubscription oversubscribe;
-			outfile << c;
-		}
+			if (!source)
+			{
+				sink(nullptr);
+				break;
+			}
 
-		sink(nullptr); // End
+			tasket::scoped_oversubscription oversubscribe;
+			outfile << *c;
+		}
 	});
 
 	make_edge(in, transform);
