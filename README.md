@@ -14,7 +14,7 @@ Example:
 		{
 			std::string str;
 			{					
-				scoped_oversubscription oversubscribe;
+				tasket::scoped_oversubscription oversubscribe;
 
 				if (!std::getline(infile, str))
 					break;
@@ -41,7 +41,7 @@ Example:
 
 		for (auto c : source)
 		{
-			scoped_oversubscription oversubscribe;
+			tasket::scoped_oversubscription oversubscribe;
 			outfile << c;
 		}
 	});
