@@ -6,7 +6,7 @@ Example:
 	
 	tasket::executor executor;
 
-	generator_node<void*, std::string> in(executor, [&](tasket::pull_type<std::string>& source, tasket::push_type<std::string>& sink)
+	generator_node<void*, std::string> in(executor, [&](tasket::pull_type<void*>& source, tasket::push_type<std::string>& sink)
 	{
 		std::ifstream infile("infile.txt");
 
@@ -48,6 +48,6 @@ Example:
 	make_edge(in, transform);
 	make_edge(transform, out);
 
-	in.try_put(nullptr); // Start
+	in.try_put(nullpt, nullptr); // Start
 
 	executor.wait();
